@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Job Finder</title>
+    <style>
+        body { font-family: Arial; background: #f4f4f4; padding: 20px; }
+        h1 { color: #333; }
+        .job { background: white; padding: 15px; margin-bottom: 10px; border-radius: 8px; }
+        .job a { color: blue; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <h1>Job Finder</h1>
+    <form method="post">
+        <input name="title" placeholder="Job title" required>
+        <input name="location" placeholder="Location" required>
+        <input name="max_results" type="number" value="10" min="1">
+        <input name="latest_days" type="number" value="7" min="0">
+        <button type="submit">Find Jobs</button>
+    </form>
+    <p>{{ message }}</p>
+    {% for job in jobs %}
+        <div class="job">
+            <h3>{{ job.title }} at {{ job.company }}</h3>
+            <p><strong>Location:</strong> {{ job.location }} | <strong>Posted:</strong> {{ job.posted_date }}</p>
+            <p><a href="{{ job.link }}" target="_blank">Apply Here</a> ({{ job.source }})</p>
+        </div>
+    {% endfor %}
+</body>
+</html>
