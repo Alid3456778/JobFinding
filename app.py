@@ -1,3 +1,4 @@
+import os 
 from flask import Flask, render_template, request
 from job_automation import JobScraper
 
@@ -23,4 +24,6 @@ def index():
     return render_template('index.html', jobs=jobs, message=message)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
+
