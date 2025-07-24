@@ -9,6 +9,7 @@ from urllib.parse import urlencode, quote
 import concurrent.futures
 from dataclasses import dataclass
 from typing import List, Optional
+import random
 
 @dataclass
 class Job:
@@ -24,46 +25,142 @@ class Job:
 class JobScraper:
     def __init__(self):
         self.session = requests.Session()
+        # Rotate user agents to avoid detection
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+        ]
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': random.choice(self.user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
         })
         self.jobs = []
         
+    def add_delay(self, min_delay=1, max_delay=3):
+        """Add random delay to avoid being blocked"""
+        time.sleep(random.uniform(min_delay, max_delay))
+        
     def get_jobs_internshala(self, title: str, location: str, max_results: int = 10) -> List[Job]:
-        """Scrape jobs from Internshala"""
+        """Enhanced Internshala scraper with multiple selector fallbacks"""
         print(f"🔍 Searching Internshala for {title} in {location}...")
         jobs = []
         
         try:
-            url = f"https://internshala.com/jobs/{title.replace(' ', '-')}-jobs-in-{location.replace(' ', '-')}"
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # Try different URL formats
+            urls_to_try = [
+                f"https://internshala.com/jobs/{title.replace(' ', '-')}-jobs-in-{location.replace(' ', '-')}",
+                f"https://internshala.com/jobs/{title.replace(' ', '-')}-jobs",
+                f"https://internshala.com/jobs/keyword-{title.replace(' ', '%20')}/location-{location.replace(' ', '%20')}"
+            ]
             
-            listings = soup.select('.individual_internship')[:max_results]
-            
-            for job_elem in listings:
+            for url in urls_to_try:
                 try:
-                    job_title = job_elem.select_one('div.heading_4_5, .profile h3').text.strip()
-                    company = job_elem.select_one('a.link_display_like_text, .company-name').text.strip()
-                    job_link = "https://internshala.com" + job_elem.select_one('a.view_detail_button, a[href*="/jobs/detail/"]')['href']
+                    self.session.headers['User-Agent'] = random.choice(self.user_agents)
+                    response = self.session.get(url, timeout=15)
                     
-                    # Try to extract salary and posting date
-                    salary_elem = job_elem.select_one('.salary, .stipend')
-                    salary = salary_elem.text.strip() if salary_elem else "Not specified"
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        
+                        # Multiple selector options
+                        selectors = [
+                            '.individual_internship',
+                            '.internship_meta',
+                            '.job-container',
+                            '[class*="internship"]',
+                            '.job-listing'
+                        ]
+                        
+                        listings = []
+                        for selector in selectors:
+                            listings = soup.select(selector)[:max_results]
+                            if listings:
+                                print(f"✅ Found listings with selector: {selector}")
+                                break
+                        
+                        if not listings:
+                            print(f"⚠️ No listings found with any selector on {url}")
+                            continue
+                        
+                        for job_elem in listings:
+                            try:
+                                # Multiple title selectors
+                                title_selectors = [
+                                    'div.heading_4_5', '.profile h3', '.job-title', 
+                                    'h3', 'h2', '[class*="title"]', '.internship-title'
+                                ]
+                                job_title = self.extract_text_with_selectors(job_elem, title_selectors)
+                                
+                                # Multiple company selectors
+                                company_selectors = [
+                                    'a.link_display_like_text', '.company-name', 
+                                    '.company', '[class*="company"]', '.employer-name'
+                                ]
+                                company = self.extract_text_with_selectors(job_elem, company_selectors)
+                                
+                                # Extract job link - try multiple approaches
+                                job_link = ""
+                                
+                                # Method 1: Look for direct job links
+                                link_selectors = [
+                                    'a.view_detail_button', 'a[href*="/jobs/detail/"]',
+                                    'a[href*="/internship/detail/"]', '.apply-link a', 
+                                    'a[href*="/jobs/"]', 'a[href*="/job/"]'
+                                ]
+                                job_link = self.extract_link_with_selectors(job_elem, link_selectors, "https://internshala.com")
+                                
+                                # Method 2: If no direct link, try to find any link in the job element
+                                if not job_link:
+                                    all_links = job_elem.find_all('a', href=True)
+                                    for link in all_links:
+                                        href = link.get('href', '')
+                                        if any(keyword in href for keyword in ['/jobs/', '/internship/', '/detail/', '/job/']):
+                                            if href.startswith('/'):
+                                                job_link = "https://internshala.com" + href
+                                            elif href.startswith('http'):
+                                                job_link = href
+                                            else:
+                                                job_link = "https://internshala.com/" + href
+                                            break
+                                
+                                # Method 3: Construct link from job ID if available
+                                if not job_link and job_elem.get('data-job-id'):
+                                    job_id = job_elem.get('data-job-id')
+                                    job_link = f"https://internshala.com/jobs/detail/{job_id}"
+                                
+                                # Salary and date
+                                salary_selectors = ['.salary', '.stipend', '.compensation', '[class*="salary"]']
+                                salary = self.extract_text_with_selectors(job_elem, salary_selectors, "Not specified")
+                                
+                                date_selectors = ['.status-success', '.date', '.posted-date', '[class*="date"]']
+                                posted_date = self.extract_text_with_selectors(job_elem, date_selectors, "Recently")
+                                
+                                if job_title and company:
+                                    jobs.append(Job(
+                                        title=job_title,
+                                        company=company,
+                                        location=location.title(),
+                                        link=job_link,
+                                        source="Internshala",
+                                        salary=salary,
+                                        posted_date=posted_date
+                                    ))
+                            except Exception as e:
+                                print(f"⚠️ Error parsing job element: {e}")
+                                continue
+                        
+                        if jobs:
+                            break  # Found jobs, no need to try other URLs
+                            
+                    self.add_delay()
                     
-                    posted_elem = job_elem.select_one('.status-success, .date')
-                    posted_date = posted_elem.text.strip() if posted_elem else "Recently"
-                    
-                    jobs.append(Job(
-                        title=job_title,
-                        company=company,
-                        location=location.title(),
-                        link=job_link,
-                        source="Internshala",
-                        salary=salary,
-                        posted_date=posted_date
-                    ))
                 except Exception as e:
+                    print(f"⚠️ Error with URL {url}: {e}")
                     continue
                     
         except Exception as e:
@@ -73,7 +170,7 @@ class JobScraper:
         return jobs
 
     def get_jobs_indeed(self, title: str, location: str, max_results: int = 10) -> List[Job]:
-        """Scrape jobs from Indeed"""
+        """Enhanced Indeed scraper"""
         print(f"🔍 Searching Indeed for {title} in {location}...")
         jobs = []
         
@@ -81,48 +178,118 @@ class JobScraper:
             params = {
                 'q': title,
                 'l': location,
-                'fromage': '7',  # Last 7 days
-                'sort': 'date'
+                'fromage': '7',
+                'sort': 'date',
+                'limit': str(max_results)
             }
-            url = f"https://in.indeed.com/jobs?{urlencode(params)}"
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
             
-            job_cards = soup.select('[data-jk], .job_seen_beacon')[:max_results]
+            # Try different Indeed domains
+            domains = [
+                'https://in.indeed.com/jobs',
+                'https://www.indeed.co.in/jobs',
+                'https://indeed.com/jobs'
+            ]
             
-            for card in job_cards:
+            for base_url in domains:
                 try:
-                    title_elem = card.select_one('h2 a span, .jobTitle a span')
-                    if not title_elem:
-                        continue
+                    url = f"{base_url}?{urlencode(params)}"
+                    self.session.headers['User-Agent'] = random.choice(self.user_agents)
+                    response = self.session.get(url, timeout=15)
+                    
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
                         
-                    job_title = title_elem.get('title', title_elem.text.strip())
+                        # Multiple job card selectors
+                        card_selectors = [
+                            '[data-jk]',
+                            '.job_seen_beacon',
+                            '.jobsearch-SerpJobCard',
+                            '.result',
+                            '[class*="jobsearch"]'
+                        ]
+                        
+                        job_cards = []
+                        for selector in card_selectors:
+                            job_cards = soup.select(selector)[:max_results]
+                            if job_cards:
+                                print(f"✅ Found job cards with selector: {selector}")
+                                break
+                        
+                        for card in job_cards:
+                            try:
+                                # Title extraction
+                                title_selectors = [
+                                    'h2 a span[title]', '.jobTitle a span', 'h2 a', 
+                                    '.jobTitle', 'h3 a', '[data-testid*="title"]'
+                                ]
+                                job_title = self.extract_text_with_selectors(card, title_selectors)
+                                
+                                # Company extraction
+                                company_selectors = [
+                                    '.companyName a', '.companyName span', '.companyName',
+                                    '[data-testid="company-name"]', '.company'
+                                ]
+                                company = self.extract_text_with_selectors(card, company_selectors)
+                                
+                                # Enhanced link extraction for Indeed
+                                job_link = ""
+                                
+                                # Method 1: Standard link selectors
+                                link_selectors = ['h2 a', '.jobTitle a', 'a[data-jk]', '.jobTitle-color-purple a']
+                                job_link = self.extract_link_with_selectors(card, link_selectors, "https://in.indeed.com")
+                                
+                                # Method 2: Look for data-jk attribute to construct URL
+                                if not job_link:
+                                    data_jk = card.get('data-jk') or (card.find('[data-jk]') and card.find('[data-jk]').get('data-jk'))
+                                    if data_jk:
+                                        job_link = f"https://in.indeed.com/viewjob?jk={data_jk}"
+                                
+                                # Method 3: Find any Indeed job link in the card
+                                if not job_link:
+                                    all_links = card.find_all('a', href=True)
+                                    for link in all_links:
+                                        href = link.get('href', '')
+                                        if '/viewjob' in href or '/clk' in href:
+                                            if href.startswith('/'):
+                                                job_link = "https://in.indeed.com" + href
+                                            elif href.startswith('http'):
+                                                job_link = href
+                                            break
+                                
+                                # Location extraction
+                                location_selectors = [
+                                    '[data-testid="job-location"]', '.companyLocation', 
+                                    '.locationsContainer', '[class*="location"]'
+                                ]
+                                job_location = self.extract_text_with_selectors(card, location_selectors, location)
+                                
+                                # Salary and date
+                                salary_selectors = ['.salary-snippet', '.metadata', '.estimated-salary']
+                                salary = self.extract_text_with_selectors(card, salary_selectors, "Not specified")
+                                
+                                date_selectors = ['.date', '[data-testid*="date"]', '.jobsearch-JobMetadataHeader-date']
+                                posted_date = self.extract_text_with_selectors(card, date_selectors, "Recently")
+                                
+                                if job_title and company:
+                                    jobs.append(Job(
+                                        title=job_title,
+                                        company=company,
+                                        location=job_location,
+                                        link=job_link,
+                                        source="Indeed",
+                                        salary=salary,
+                                        posted_date=posted_date
+                                    ))
+                            except Exception as e:
+                                continue
+                        
+                        if jobs:
+                            break
+                            
+                    self.add_delay()
                     
-                    company_elem = card.select_one('.companyName a, .companyName span')
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    link_elem = card.select_one('h2 a, .jobTitle a')
-                    job_link = "https://in.indeed.com" + link_elem['href'] if link_elem else ""
-                    
-                    location_elem = card.select_one('[data-testid="job-location"], .companyLocation')
-                    job_location = location_elem.text.strip() if location_elem else location
-                    
-                    salary_elem = card.select_one('.salary-snippet, .metadata')
-                    salary = salary_elem.text.strip() if salary_elem else "Not specified"
-                    
-                    date_elem = card.select_one('.date, [data-testid="myJobsStateDate"]')
-                    posted_date = date_elem.text.strip() if date_elem else "Recently"
-                    
-                    jobs.append(Job(
-                        title=job_title,
-                        company=company,
-                        location=job_location,
-                        link=job_link,
-                        source="Indeed",
-                        salary=salary,
-                        posted_date=posted_date
-                    ))
                 except Exception as e:
+                    print(f"⚠️ Error with Indeed domain {base_url}: {e}")
                     continue
                     
         except Exception as e:
@@ -132,57 +299,116 @@ class JobScraper:
         return jobs
 
     def get_jobs_naukri(self, title: str, location: str, max_results: int = 10) -> List[Job]:
-        """Scrape jobs from Naukri.com"""
+        """Enhanced Naukri scraper"""
         print(f"🔍 Searching Naukri for {title} in {location}...")
         jobs = []
         
         try:
-            params = {
-                'k': title,
-                'l': location,
-                'experience': '0',
-                'sort': '1'  # Sort by relevance
-            }
-            url = f"https://www.naukri.com/jobs-in-{location.lower().replace(' ', '-')}?{urlencode({'k': title})}"
+            # Try different URL patterns
+            url_patterns = [
+                f"https://www.naukri.com/{title.replace(' ', '-')}-jobs-in-{location.replace(' ', '-')}",
+                f"https://www.naukri.com/jobs?q={quote(title)}&l={quote(location)}",
+                f"https://www.naukri.com/{title.replace(' ', '-')}-jobs"
+            ]
             
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            job_listings = soup.select('.jobTuple, .srp-jobtuple-wrapper')[:max_results]
-            
-            for job_elem in job_listings:
+            for url in url_patterns:
                 try:
-                    title_elem = job_elem.select_one('.jobTupleHeader a, .title')
-                    if not title_elem:
-                        continue
+                    self.session.headers['User-Agent'] = random.choice(self.user_agents)
+                    response = self.session.get(url, timeout=15)
+                    
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
                         
-                    job_title = title_elem.get('title', title_elem.text.strip())
-                    job_link = title_elem.get('href', '')
-                    if job_link and not job_link.startswith('http'):
-                        job_link = 'https://www.naukri.com' + job_link
+                        # Multiple job listing selectors
+                        listing_selectors = [
+                            '.jobTuple',
+                            '.srp-jobtuple-wrapper',
+                            '.jobTupleContainer',
+                            '[class*="jobTuple"]',
+                            '.job-tuple'
+                        ]
+                        
+                        job_listings = []
+                        for selector in listing_selectors:
+                            job_listings = soup.select(selector)[:max_results]
+                            if job_listings:
+                                print(f"✅ Found listings with selector: {selector}")
+                                break
+                        
+                        for job_elem in job_listings:
+                            try:
+                                # Title extraction
+                                title_selectors = [
+                                    '.jobTupleHeader a', '.title a', '.job-title a',
+                                    'h3 a', 'h2 a', '[class*="title"] a'
+                                ]
+                                job_title = self.extract_text_with_selectors(job_elem, title_selectors)
+                                
+                                # Enhanced link extraction for Naukri
+                                job_link = ""
+                                
+                                # Method 1: Extract from title element
+                                title_elem = self.get_element_with_selectors(job_elem, title_selectors)
+                                if title_elem and title_elem.get('href'):
+                                    href = title_elem['href']
+                                    if href.startswith('/'):
+                                        job_link = "https://www.naukri.com" + href
+                                    elif href.startswith('http'):
+                                        job_link = href
+                                    else:
+                                        job_link = "https://www.naukri.com/" + href
+                                
+                                # Method 2: Look for any job detail links
+                                if not job_link:
+                                    all_links = job_elem.find_all('a', href=True)
+                                    for link in all_links:
+                                        href = link.get('href', '')
+                                        if any(keyword in href for keyword in ['/job-detail/', '/jobs/', '/job/', '-detail-']):
+                                            if href.startswith('/'):
+                                                job_link = "https://www.naukri.com" + href
+                                            elif href.startswith('http'):
+                                                job_link = href
+                                            else:
+                                                job_link = "https://www.naukri.com/" + href
+                                            break
+                                
+                                # Company extraction
+                                company_selectors = [
+                                    '.companyInfo a', '.subTitle', '.company-name',
+                                    '[class*="company"]', '.recruiter-name'
+                                ]
+                                company = self.extract_text_with_selectors(job_elem, company_selectors)
+                                
+                                # Location, salary, date extraction
+                                location_selectors = ['.locationContainer', '.location', '[class*="location"]']
+                                job_location = self.extract_text_with_selectors(job_elem, location_selectors, location)
+                                
+                                salary_selectors = ['.salary', '.salaryContainer', '[class*="salary"]']
+                                salary = self.extract_text_with_selectors(job_elem, salary_selectors, "Not disclosed")
+                                
+                                date_selectors = ['.postedBy', '.jobPostDate', '[class*="date"]']
+                                posted_date = self.extract_text_with_selectors(job_elem, date_selectors, "Recently")
+                                
+                                if job_title and company:
+                                    jobs.append(Job(
+                                        title=job_title,
+                                        company=company,
+                                        location=job_location,
+                                        link=job_link,
+                                        source="Naukri",
+                                        salary=salary,
+                                        posted_date=posted_date
+                                    ))
+                            except Exception as e:
+                                continue
+                        
+                        if jobs:
+                            break
+                            
+                    self.add_delay()
                     
-                    company_elem = job_elem.select_one('.companyInfo a, .subTitle')
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    location_elem = job_elem.select_one('.locationContainer, .location')
-                    job_location = location_elem.text.strip() if location_elem else location
-                    
-                    salary_elem = job_elem.select_one('.salary, .salaryContainer')
-                    salary = salary_elem.text.strip() if salary_elem else "Not disclosed"
-                    
-                    date_elem = job_elem.select_one('.postedBy, .jobPostDate')
-                    posted_date = date_elem.text.strip() if date_elem else "Recently"
-                    
-                    jobs.append(Job(
-                        title=job_title,
-                        company=company,
-                        location=job_location,
-                        link=job_link,
-                        source="Naukri",
-                        salary=salary,
-                        posted_date=posted_date
-                    ))
                 except Exception as e:
+                    print(f"⚠️ Error with Naukri URL {url}: {e}")
                     continue
                     
         except Exception as e:
@@ -192,54 +418,103 @@ class JobScraper:
         return jobs
 
     def get_jobs_linkedin(self, title: str, location: str, max_results: int = 10) -> List[Job]:
-        """Scrape jobs from LinkedIn (public job search)"""
+        """Enhanced LinkedIn scraper"""
         print(f"🔍 Searching LinkedIn for {title} in {location}...")
         jobs = []
         
         try:
-            # LinkedIn public job search URL
             params = {
                 'keywords': title,
                 'location': location,
-                'f_TPR': 'r86400',  # Past 24 hours
-                'sortBy': 'DD'  # Most recent
+                'f_TPR': 'r86400',
+                'sortBy': 'DD'
             }
             url = f"https://www.linkedin.com/jobs/search?{urlencode(params)}"
             
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            self.session.headers['User-Agent'] = random.choice(self.user_agents)
+            response = self.session.get(url, timeout=15)
             
-            job_cards = soup.select('.job-search-card, .jobs-search__results-list li')[:max_results]
-            
-            for card in job_cards:
-                try:
-                    title_elem = card.select_one('.base-search-card__title, h3 a')
-                    if not title_elem:
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Multiple job card selectors
+                card_selectors = [
+                    '.job-search-card',
+                    '.jobs-search__results-list li',
+                    '.base-card',
+                    '[class*="job-search"]'
+                ]
+                
+                job_cards = []
+                for selector in card_selectors:
+                    job_cards = soup.select(selector)[:max_results]
+                    if job_cards:
+                        print(f"✅ Found LinkedIn cards with selector: {selector}")
+                        break
+                
+                for card in job_cards:
+                    try:
+                        # Title extraction with multiple fallbacks
+                        title_selectors = [
+                            '.base-search-card__title a', 'h3 a', '.job-search-card__title a',
+                            'h4 a', '[class*="title"] a'
+                        ]
+                        job_title = self.extract_text_with_selectors(card, title_selectors)
+                        
+                        # Enhanced link extraction for LinkedIn
+                        job_link = ""
+                        
+                        # Method 1: Extract from title element
+                        title_elem = self.get_element_with_selectors(card, title_selectors)
+                        if title_elem and title_elem.get('href'):
+                            href = title_elem['href']
+                            if href.startswith('http'):
+                                job_link = href
+                            elif href.startswith('/'):
+                                job_link = "https://www.linkedin.com" + href
+                        
+                        # Method 2: Look for any LinkedIn job links
+                        if not job_link:
+                            all_links = card.find_all('a', href=True)
+                            for link in all_links:
+                                href = link.get('href', '')
+                                if '/jobs/view/' in href or '/jobs/' in href:
+                                    if href.startswith('http'):
+                                        job_link = href
+                                    elif href.startswith('/'):
+                                        job_link = "https://www.linkedin.com" + href
+                                    break
+                        
+                        # Company extraction
+                        company_selectors = [
+                            '.base-search-card__subtitle a', '.job-search-card__subtitle',
+                            '.base-search-card__subtitle', 'h4', '[class*="subtitle"]'
+                        ]
+                        company = self.extract_text_with_selectors(card, company_selectors)
+                        
+                        # Location extraction
+                        location_selectors = [
+                            '.job-search-card__location', '.base-search-card__metadata',
+                            '[class*="location"]', '.job-search-card__location-text'
+                        ]
+                        job_location = self.extract_text_with_selectors(card, location_selectors, location)
+                        
+                        # Date extraction
+                        date_selectors = ['time', '.job-search-card__listdate', '[datetime]']
+                        posted_date = self.extract_text_with_selectors(card, date_selectors, "Recently")
+                        
+                        if job_title and company:
+                            jobs.append(Job(
+                                title=job_title,
+                                company=company,
+                                location=job_location,
+                                link=job_link,
+                                source="LinkedIn",
+                                posted_date=posted_date
+                            ))
+                    except Exception as e:
                         continue
                         
-                    job_title = title_elem.text.strip()
-                    job_link = title_elem.get('href', '') if title_elem.name == 'a' else card.select_one('a')['href']
-                    
-                    company_elem = card.select_one('.base-search-card__subtitle, .job-search-card__subtitle')
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    location_elem = card.select_one('.job-search-card__location, .base-search-card__metadata')
-                    job_location = location_elem.text.strip() if location_elem else location
-                    
-                    date_elem = card.select_one('time, .job-search-card__listdate')
-                    posted_date = date_elem.get('datetime', date_elem.text.strip()) if date_elem else "Recently"
-                    
-                    jobs.append(Job(
-                        title=job_title,
-                        company=company,
-                        location=job_location,
-                        link=job_link,
-                        source="LinkedIn",
-                        posted_date=posted_date
-                    ))
-                except Exception as e:
-                    continue
-                    
         except Exception as e:
             print(f"⚠️ LinkedIn error: {e}")
         
@@ -247,47 +522,66 @@ class JobScraper:
         return jobs
 
     def get_jobs_remotive(self, title: str, location: str, max_results: int = 10) -> List[Job]:
-        """Enhanced Remotive scraper"""
+        """Enhanced Remotive scraper for remote jobs"""
         print(f"🔍 Searching Remotive for {title}...")
         jobs = []
         
         try:
             url = f"https://remotive.com/remote-jobs/search?search={quote(title)}"
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            self.session.headers['User-Agent'] = random.choice(self.user_agents)
+            response = self.session.get(url, timeout=15)
             
-            job_cards = soup.select("article.job-tile")[:max_results]
-            
-            for card in job_cards:
-                try:
-                    title_elem = card.select_one("h2.job-tile-title, .job-title")
-                    job_title = title_elem.text.strip() if title_elem else "Unknown"
-                    
-                    company_elem = card.select_one("span.company, .company-name")
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    link_elem = card.find("a")
-                    job_link = "https://remotive.com" + link_elem["href"] if link_elem else ""
-                    
-                    salary_elem = card.select_one('.salary, .compensation')
-                    salary = salary_elem.text.strip() if salary_elem else "Not specified"
-                    
-                    # Check if location matches or it's remote
-                    description = card.text.lower()
-                    is_relevant = location.lower() in description or "remote" in description
-                    
-                    if is_relevant:
-                        jobs.append(Job(
-                            title=job_title,
-                            company=company,
-                            location="Remote",
-                            link=job_link,
-                            source="Remotive",
-                            salary=salary
-                        ))
-                except Exception as e:
-                    continue
-                    
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                card_selectors = [
+                    "article.job-tile",
+                    ".job-listing",
+                    "[class*='job-tile']",
+                    ".job-card"
+                ]
+                
+                job_cards = []
+                for selector in card_selectors:
+                    job_cards = soup.select(selector)[:max_results]
+                    if job_cards:
+                        break
+                
+                for card in job_cards:
+                    try:
+                        title_selectors = ["h2.job-tile-title", ".job-title", "h3", "h2"]
+                        job_title = self.extract_text_with_selectors(card, title_selectors)
+                        
+                        company_selectors = ["span.company", ".company-name", ".company"]
+                        company = self.extract_text_with_selectors(card, company_selectors)
+                        
+                        # Enhanced link extraction for Remotive
+                        job_link = ""
+                        link_elem = card.find("a", href=True)
+                        if link_elem and link_elem.get('href'):
+                            href = link_elem['href']
+                            if href.startswith('http'):
+                                job_link = href
+                            elif href.startswith('/'):
+                                job_link = "https://remotive.com" + href
+                            else:
+                                job_link = "https://remotive.com/" + href
+                        
+                        salary_selectors = ['.salary', '.compensation']
+                        salary = self.extract_text_with_selectors(card, salary_selectors, "Not specified")
+                        
+                        if job_title and company:
+                            jobs.append(Job(
+                                title=job_title,
+                                company=company,
+                                location="Remote",
+                                link=job_link,
+                                source="Remotive",
+                                salary=salary
+                            ))
+                    except Exception as e:
+                        continue
+                        
         except Exception as e:
             print(f"⚠️ Remotive error: {e}")
         
@@ -301,83 +595,149 @@ class JobScraper:
         
         try:
             url = f"https://weworkremotely.com/remote-jobs/search?term={quote(title)}"
-            response = self.session.get(url, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            self.session.headers['User-Agent'] = random.choice(self.user_agents)
+            response = self.session.get(url, timeout=15)
             
-            job_listings = soup.select("section.jobs li, .jobs-container li")[:max_results]
-            
-            for job_elem in job_listings:
-                try:
-                    anchor = job_elem.find("a", href=True)
-                    if not anchor:
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                listing_selectors = [
+                    "section.jobs li",
+                    ".jobs-container li",
+                    ".job-listing",
+                    "li[class*='job']"
+                ]
+                
+                job_listings = []
+                for selector in listing_selectors:
+                    job_listings = soup.select(selector)[:max_results]
+                    if job_listings:
+                        break
+                
+                for job_elem in job_listings:
+                    try:
+                        # Enhanced link extraction for WeWorkRemotely
+                        anchor = job_elem.find("a", href=True)
+                        job_link = ""
+                        if anchor and anchor.get('href'):
+                            href = anchor['href']
+                            if href.startswith('http'):
+                                job_link = href
+                            elif href.startswith('/'):
+                                job_link = "https://weworkremotely.com" + href
+                            else:
+                                job_link = "https://weworkremotely.com/" + href
+                        
+                        company_selectors = [".company", ".company-name"]
+                        company = self.extract_text_with_selectors(job_elem, company_selectors)
+                        
+                        title_selectors = [".title", ".job-title", "h3", "h2"]
+                        job_title = self.extract_text_with_selectors(job_elem, title_selectors)
+                        
+                        if job_title and company:
+                            jobs.append(Job(
+                                title=job_title,
+                                company=company,
+                                location="Remote",
+                                link=job_link,
+                                source="WeWorkRemotely"
+                            ))
+                    except Exception as e:
                         continue
                         
-                    job_link = "https://weworkremotely.com" + anchor["href"]
-                    
-                    company_elem = job_elem.select_one(".company")
-                    company = company_elem.text.strip() if company_elem else "Unknown"
-                    
-                    title_elem = job_elem.select_one(".title")
-                    job_title = title_elem.text.strip() if title_elem else "Unknown"
-                    
-                    # Check relevance
-                    description = job_elem.text.lower()
-                    is_relevant = location.lower() in description or any(keyword in title.lower() for keyword in title.lower().split())
-                    
-                    if is_relevant:
-                        jobs.append(Job(
-                            title=job_title,
-                            company=company,
-                            location="Remote",
-                            link=job_link,
-                            source="WeWorkRemotely"
-                        ))
-                except Exception as e:
-                    continue
-                    
         except Exception as e:
             print(f"⚠️ WeWorkRemotely error: {e}")
         
         print(f"✅ Found {len(jobs)} jobs from WeWorkRemotely")
         return jobs
 
+    def get_element_with_selectors(self, element, selectors: List[str]):
+        """Get the first element that matches any of the selectors"""
+        for selector in selectors:
+            try:
+                found_elem = element.select_one(selector)
+                if found_elem:
+                    return found_elem
+            except Exception:
+                continue
+        return None
+
+    def extract_text_with_selectors(self, element, selectors: List[str], default: str = "Unknown") -> str:
+        """Try multiple selectors to extract text"""
+        for selector in selectors:
+            try:
+                found_elem = element.select_one(selector)
+                if found_elem:
+                    # Handle title attribute or text content
+                    text = found_elem.get('title') or found_elem.text.strip()
+                    if text:
+                        return text
+            except Exception:
+                continue
+        return default
+
+    def extract_link_with_selectors(self, element, selectors: List[str], base_url: str = "") -> str:
+        """Try multiple selectors to extract links with better URL handling"""
+        for selector in selectors:
+            try:
+                found_elem = element.select_one(selector)
+                if found_elem and found_elem.get('href'):
+                    href = found_elem['href'].strip()
+                    
+                    # Handle different URL formats
+                    if href.startswith('http://') or href.startswith('https://'):
+                        return href
+                    elif href.startswith('/') and base_url:
+                        return base_url + href
+                    elif href and base_url:
+                        return base_url + '/' + href
+                    elif href:
+                        return href
+            except Exception:
+                continue
+        return ""
+
     def scrape_all_sites(self, title: str, location: str, max_results_per_site: int = 10) -> List[Job]:
-        """Scrape all job sites concurrently"""
+        """Scrape all job sites with better error handling"""
         print(f"\n🚀 Starting job search for '{title}' in '{location}'...")
         print("=" * 60)
         
         scrapers = [
-            self.get_jobs_indeed,
-            self.get_jobs_naukri,
-            self.get_jobs_internshala,
-            self.get_jobs_linkedin,
-            self.get_jobs_remotive,
-            self.get_jobs_weworkremotely
+            ("Indeed", self.get_jobs_indeed),
+            ("Naukri", self.get_jobs_naukri),
+            ("Internshala", self.get_jobs_internshala),
+            ("LinkedIn", self.get_jobs_linkedin),
+            ("Remotive", self.get_jobs_remotive),
+            ("WeWorkRemotely", self.get_jobs_weworkremotely)
         ]
         
         all_jobs = []
         
-        # Use ThreadPoolExecutor for concurrent scraping
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_scraper = {
-                executor.submit(scraper, title, location, max_results_per_site): scraper.__name__ 
-                for scraper in scrapers
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_scraper):
-                try:
-                    jobs = future.result(timeout=30)
-                    all_jobs.extend(jobs)
-                except Exception as e:
-                    scraper_name = future_to_scraper[future]
-                    print(f"⚠️ {scraper_name} failed: {e}")
+        # Sequential scraping with delays to avoid being blocked
+        for scraper_name, scraper_func in scrapers:
+            try:
+                print(f"\n🌐 Starting {scraper_name}...")
+                jobs = scraper_func(title, location, max_results_per_site)
+                all_jobs.extend(jobs)
+                
+                # Add delay between scrapers
+                if jobs:
+                    print(f"✅ {scraper_name}: {len(jobs)} jobs found")
+                else:
+                    print(f"❌ {scraper_name}: No jobs found")
+                    
+                self.add_delay(2, 5)  # Longer delay between different sites
+                
+            except Exception as e:
+                print(f"⚠️ {scraper_name} failed completely: {e}")
+                continue
         
-        # Remove duplicates based on title and company
+        # Remove duplicates
         unique_jobs = []
         seen = set()
         for job in all_jobs:
-            identifier = (job.title.lower(), job.company.lower())
-            if identifier not in seen:
+            identifier = (job.title.lower().strip(), job.company.lower().strip())
+            if identifier not in seen and job.title.strip() and job.company.strip():
                 seen.add(identifier)
                 unique_jobs.append(job)
         
@@ -386,34 +746,26 @@ class JobScraper:
 
     def filter_latest_jobs(self, jobs: List[Job], days: int = 7) -> List[Job]:
         """Filter jobs posted in the last N days"""
+        if days == 0:
+            return jobs
+            
         keywords_recent = ['today', 'yesterday', 'hour', 'day', 'week', 'recent', 'new', 'ago', 'posted']
         
         filtered_jobs = []
         for job in jobs:
             posted_date_lower = job.posted_date.lower()
             
-            # Debug: Print what we're filtering
-            print(f"🔍 Checking job: {job.title[:30]}... | Posted: '{job.posted_date}' | Source: {job.source}")
-            
             # If posting date contains recent keywords, include it
             if any(keyword in posted_date_lower for keyword in keywords_recent):
-                print(f"✅ Included (recent keyword found)")
                 filtered_jobs.append(job)
-            # If no specific date info, include it (better to have false positives)
+            # If no specific date info, include it
             elif not posted_date_lower or posted_date_lower in ['recently', '', 'not specified']:
-                print(f"✅ Included (no date info)")
                 filtered_jobs.append(job)
-            # If days filter is disabled (0), include all jobs
-            elif days == 0:
-                print(f"✅ Included (no date filter)")
-                filtered_jobs.append(job)
-            else:
-                print(f"❌ Excluded")
         
         return filtered_jobs
 
     def save_to_csv(self, jobs: List[Job], title: str, location: str):
-        """Save jobs to CSV with enhanced format"""
+        """Save jobs to CSV"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"jobs_{title.replace(' ', '_')}_{location.replace(' ', '_')}_{timestamp}.csv"
         
@@ -423,20 +775,15 @@ class JobScraper:
             
             for job in jobs:
                 writer.writerow([
-                    job.title, 
-                    job.company, 
-                    job.location, 
-                    job.salary,
-                    job.posted_date,
-                    job.link, 
-                    job.source
+                    job.title, job.company, job.location, job.salary,
+                    job.posted_date, job.link, job.source
                 ])
         
         print(f"\n💾 Results saved to: {filename}")
         return filename
 
     def save_to_json(self, jobs: List[Job], title: str, location: str):
-        """Save jobs to JSON format"""
+        """Save jobs to JSON"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"jobs_{title.replace(' ', '_')}_{location.replace(' ', '_')}_{timestamp}.json"
         
@@ -467,11 +814,11 @@ class JobScraper:
         
         if not jobs:
             print("❌ No jobs found matching your criteria.")
-            print("\n💡 Try:")
+            print("\n💡 Suggestions:")
+            print("   • Try different job titles (developer, engineer, analyst)")
+            print("   • Use broader locations (mumbai, bangalore, delhi)")
             print("   • Set filter days to 0 to see all jobs")
-            print("   • Check spelling of job title")
-            print("   • Try different location (bangalore, mumbai, delhi)")
-            print("   • Use broader job title (developer, engineer)")
+            print("   • Check your internet connection")
             return
         
         # Group by source
@@ -496,43 +843,59 @@ class JobScraper:
                 print(f"   🔗 {job.link}")
 
 def main():
-    # Configuration
-    TITLE = input("Enter job title (e.g., 'frontend developer', 'python developer'): ").strip() or "frontend developer"
-    LOCATION = input("Enter location (e.g., 'mumbai', 'delhi', 'bangalore'): ").strip() or "mumbai"
-    MAX_RESULTS = int(input("Max results per site (default 10): ").strip() or "10")
-    LATEST_DAYS = int(input("Filter jobs from last N days (0 for all jobs, default 7): ").strip() or "7")
+    print("🚀 Enhanced Multi-Platform Job Scraper")
+    print("=" * 50)
     
-    print(f"\n🎯 Searching for: '{TITLE}' in '{LOCATION}'")
-    print(f"📊 Max results per site: {MAX_RESULTS}")
-    if LATEST_DAYS == 0:
-        print(f"📅 Showing ALL jobs (no date filter)")
-    else:
-        print(f"📅 Latest jobs from last {LATEST_DAYS} days")
+    # Configuration with better defaults
+    TITLE = input("Enter job title (e.g., 'python developer', 'data analyst'): ").strip() or "python developer"
+    LOCATION = input("Enter location (e.g., 'mumbai', 'delhi', 'bangalore'): ").strip() or "mumbai"
+    MAX_RESULTS = int(input("Max results per site (5-20, default 10): ").strip() or "10")
+    LATEST_DAYS = int(input("Filter jobs from last N days (0 for all, default 7): ").strip() or "7")
+    
+    # Validate inputs
+    MAX_RESULTS = max(5, min(20, MAX_RESULTS))  # Limit between 5-20
+    LATEST_DAYS = max(0, LATEST_DAYS)
+    
+    print(f"\n🎯 Configuration:")
+    print(f"   Job Title: '{TITLE}'")
+    print(f"   Location: '{LOCATION}'")
+    print(f"   Max Results per Site: {MAX_RESULTS}")
+    print(f"   Date Filter: {'All jobs' if LATEST_DAYS == 0 else f'Last {LATEST_DAYS} days'}")
+    
+    print(f"\n⚠️ Important Notes:")
+    print(f"   • This scraper respects rate limits with delays")
+    print(f"   • Some sites may block requests - this is normal")
+    print(f"   • Results depend on site availability and structure")
+    print(f"   • Remote job sites (Remotive, WeWorkRemotely) ignore location")
     
     # Initialize scraper
     scraper = JobScraper()
     
     # Scrape all sites
+    print(f"\n🔄 Starting scraping process...")
     all_jobs = scraper.scrape_all_sites(TITLE, LOCATION, MAX_RESULTS)
     
-    # Show all jobs first for debugging
-    print(f"\n📋 All jobs found (before filtering): {len(all_jobs)}")
-    if all_jobs and LATEST_DAYS > 0:
-        print("🔍 Filtering for latest jobs...")
+    if not all_jobs:
+        print(f"\n❌ No jobs found from any source!")
+        print(f"💡 This could be due to:")
+        print(f"   • Network connectivity issues")
+        print(f"   • Sites blocking the requests")
+        print(f"   • No matching jobs available")
+        print(f"   • Site structure changes")
+        return
+    
+    # Filter for latest jobs if requested
+    if LATEST_DAYS > 0:
+        print(f"\n🔍 Filtering for jobs from last {LATEST_DAYS} days...")
+        latest_jobs = scraper.filter_latest_jobs(all_jobs, LATEST_DAYS)
         
-    # Filter for latest jobs
-    latest_jobs = scraper.filter_latest_jobs(all_jobs, LATEST_DAYS)
-    
-    if LATEST_DAYS == 0:
-        print(f"\n📊 Total jobs (no filter): {len(latest_jobs)}")
+        if latest_jobs:
+            print(f"✅ Found {len(latest_jobs)} recent jobs out of {len(all_jobs)} total")
+            jobs_to_display = latest_jobs
+        else:
+            print(f"⚠️ No recent jobs found, showing all {len(all_jobs)} jobs")
+            jobs_to_display = all_jobs
     else:
-        print(f"\n🔥 Latest jobs (last {LATEST_DAYS} days): {len(latest_jobs)}")
-    
-    # If no latest jobs found but we have all jobs, show all jobs
-    jobs_to_display = latest_jobs if latest_jobs else all_jobs
-    
-    if not latest_jobs and all_jobs:
-        print(f"\n⚠️ No jobs matched date filter, showing all {len(all_jobs)} jobs found:")
         jobs_to_display = all_jobs
     
     # Display results
@@ -540,7 +903,8 @@ def main():
     
     # Save results
     if jobs_to_display:
-        save_choice = input("\n💾 Save results? (csv/json/both/no) [csv]: ").strip().lower() or "csv"
+        print(f"\n💾 Save Options:")
+        save_choice = input("Save results? (csv/json/both/no) [csv]: ").strip().lower() or "csv"
         
         if save_choice in ['csv', 'both']:
             scraper.save_to_csv(jobs_to_display, TITLE, LOCATION)
@@ -548,7 +912,25 @@ def main():
         if save_choice in ['json', 'both']:
             scraper.save_to_json(jobs_to_display, TITLE, LOCATION)
     
-    print(f"\n✅ Job search completed! Displayed {len(jobs_to_display)} jobs.")
+    # Summary
+    print(f"\n✅ Job search completed!")
+    print(f"   📊 Total jobs found: {len(all_jobs)}")
+    print(f"   📋 Jobs displayed: {len(jobs_to_display)}")
+    
+    if all_jobs:
+        sources = {}
+        for job in all_jobs:
+            sources[job.source] = sources.get(job.source, 0) + 1
+        
+        print(f"   🌐 Jobs by source:")
+        for source, count in sources.items():
+            print(f"      • {source}: {count}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n⚠️ Scraping interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        print(f"💡 Try running the script again or check your internet connection")
