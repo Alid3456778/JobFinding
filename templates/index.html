@@ -3,7 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Job Finder - Find Your Dream Job</title>
+    <title>Job Finder | Search Jobs Across LinkedIn, Internshala, RemoteOK and More</title>
+    <meta name="description" content="Job Finder helps you search jobs across multiple platforms, filter openings by source, and discover fresh roles from LinkedIn, Internshala, RemoteOK, The Muse, and more.">
+    <meta name="keywords" content="job finder, job search, LinkedIn jobs, Internshala jobs, remote jobs, job portal, job openings, career search, online jobs">
+    <meta name="author" content="Job Finder">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://jobfinding-kvbr.onrender.com/">
+
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Job Finder | Search Jobs Across Top Job Platforms">
+    <meta property="og:description" content="Search jobs across multiple platforms, compare openings by source, and find recent roles faster with Job Finder.">
+    <meta property="og:url" content="https://jobfinding-kvbr.onrender.com/">
+    <meta property="og:site_name" content="Job Finder">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Job Finder | Search Jobs Across Top Job Platforms">
+    <meta name="twitter:description" content="Find jobs faster across LinkedIn, Internshala, remote job boards, and more from one clean dashboard.">
+    <meta name="theme-color" content="#123c69">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.svg') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
         * {
@@ -46,6 +65,44 @@
             text-align: center;
             margin-bottom: 40px;
             animation: fadeInUp 0.8s ease-out;
+        }
+
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 16px;
+            padding: 14px 22px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            backdrop-filter: blur(12px);
+            margin-bottom: 18px;
+            box-shadow: 0 18px 45px rgba(4, 13, 33, 0.16);
+        }
+
+        .brand-logo {
+            width: 62px;
+            height: 62px;
+            border-radius: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #f59e0b 0%, #0f766e 55%, #0891b2 100%);
+            color: #fff;
+            font-size: 1.6rem;
+            box-shadow: 0 14px 30px rgba(8, 145, 178, 0.28);
+        }
+
+        .brand-copy {
+            text-align: left;
+        }
+
+        .brand-copy span {
+            display: block;
+            font-size: 0.78rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.72);
         }
 
         .header h1 {
@@ -553,6 +610,16 @@
                 font-size: 2.5rem;
             }
 
+            .brand {
+                width: 100%;
+                justify-content: center;
+                border-radius: 24px;
+            }
+
+            .brand-copy {
+                text-align: center;
+            }
+
             .form-grid,
             .advanced-options {
                 grid-template-columns: 1fr;
@@ -591,7 +658,15 @@
 
     <div class="container">
         <div class="header">
-            <h1><i class="fas fa-briefcase"></i> Job Finder</h1>
+            <div class="brand">
+                <div class="brand-logo">
+                    <i class="fas fa-briefcase"></i>
+                </div>
+                <div class="brand-copy">
+                    <span>Smart Career Search</span>
+                    <h1>Job Finder</h1>
+                </div>
+            </div>
             <p>Search smarter across reliable job platforms and get ready to apply faster.</p>
         </div>
 
